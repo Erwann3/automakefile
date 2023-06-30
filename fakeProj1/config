@@ -1,0 +1,14 @@
+main.c;krezlrjzl/fakeProj.h
+calc.c;calc/calc.h krezlrjzl/fakeProj.h
+PROJECT_DIR;fakeProj1
+fakeProj;EXEC
+CC;clang
+SOURCES_DIR;.
+CFLAGS;-ftest-coverage -O2
+HEADERS_DIR;include
+LIBS_DIR;librarys
+BCK_DIR;backup
+ZIP;tar
+ZIPFLAGS;-cvvf
+UNZIP;tar
+UNZIPFLAGS;-xvf

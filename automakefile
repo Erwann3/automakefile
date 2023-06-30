@@ -1,0 +1,197 @@
+#!/bin/bash
+
+RED='\033[31;04m'
+GREEN='\033[0;32m'
+PURPLE='\033[1;35m'
+NC='\033[0m'
+
+function handle_non_source_line() {
+    local key=$1
+    local value=$2
+
+    case $key in
+        "PROJECT_DIR" | "SOURCES_DIR" | "HEADERS_DIR" | "LIBS_DIR" | "EXEC" | "CC" | "CFLAGS" | "LDFLAGS" | "BCK_DIR" | "ZIP" | "ZIPFLAGS" | "UNZIP" | "UNZIPFLAGS")
+        declare -g $key=$value
+        ;;
+    esac
+    case $value in
+        "PROJECT_DIR" | "SOURCES_DIR" | "HEADERS_DIR" | "LIBS_DIR" | "EXEC" | "CC" | "CFLAGS" | "LDFLAGS" | "BCK_DIR" | "ZIP" | "ZIPFLAGS" | "UNZIP" | "UNZIPFLAGS")
+        declare -g $value=$key
+        ;;
+    esac
+}
+
+function print_usage() {
+    echo -e "${RED}Usage: $0 config_file${NC}"
+    exit 84
+}
+
+if [ $# -ne 1 ]; then print_usage; fi
+
+config_file=$1
+
+declare -A source_files
+
+while read -r line || [[ -n "$line" ]]; do
+    IFS=';' read -ra fields <<< "$line"
+    key=${fields[0]}
+    value=${fields[1]}
+
+    if [[ $key == *.h ]]; then
+        source_files[$value]=$key
+    fi
+    if [[ $key == *.c ]]; then
+        source_files[$key]=$value
+    else
+        handle_non_source_line $key $value
+    fi
+done < $config_file
+
+echo -e "${PURPLE}Generating Makefile for project ${EXEC}...${NC}"
+
+if [ -z "$PROJECT_DIR" ]; then
+    PROJECT_DIR=$config_file
+fi
+
+if [ -z "$CC" ]; then
+    CC="gcc"
+fi
+
+if [ -z "$EXEC" ]; then
+    EXEC="a.out"
+fi
+
+if [ -z "$SOURCES_DIR" ]; then
+    SOURCES_DIR="."
+fi
+
+if [ -z "$LIBS_DIR" ]; then
+    LIBS_DIR="lib/my"
+fi
+
+if [ -z "$BCK_DIR" ]; then
+    BCK_DIR="backup"
+fi
+
+if [ -z "$ZIP" ]; then
+    ZIP="tar"
+fi
+
+if [ -z "$ZIPFLAGS" ]; then
+    ZIPFLAGS="-cvvf"
+fi
+
+if [ -z "$UNZIP" ]; then
+    UNZIP="tar"
+fi
+
+if [ -z "$UNZIPFLAGS" ]; then
+    UNZIPFLAGS="-xvf"
+fi
+
+if [ ${#source_files[@]} -eq 0 ]; then
+    source_files=($(find "${PROJECT_DIR}" -type f -name "*.c" -exec basename {} \;))
+fi
+
+if [ ${#source_files[@]} -eq 0 ]; then
+    echo -e "${RED}You must have at least 1 source file.${NC}"
+    exit 84
+fi
+
+rm -f "$PROJECT_DIR/version.txt"
+touch "${PROJECT_DIR}/version.txt"
+echo -e "1" > "${PROJECT_DIR}/version.txt"
+
+cat > "${PROJECT_DIR}/Makefile" <<EOF
+CC=${CC}
+CFLAGS=${CFLAGS}
+LDFLAGS=${LDFLAGS}
+EXEC=${EXEC}
+VERSION:=\$(shell cat version.txt)
+
+all: \$(EXEC)
+
+EOF
+
+declare -A path_to_source
+SYSTEM_HEADERS=("math.h" "stdio.h" "stdlib.h" "string.h" "time.h" "errno.h" "ctype.h" "fcntl.h" "limits.h" "locale.h" "setjmp.h" "signal.h" "stdarg.h" "stddef.h" "sys/stat.h" "sys/types.h" "unistd.h")
+objects=()
+for source in "${!source_files[@]}"; do
+    object_file="${source%.c}.o"
+    FILE_PATH=$(find "$PROJECT_DIR" -type f -name "$source")
+    if [ -z "$FILE_PATH" ]; then
+        echo -e "${RED}The file ${source} doesn't exist in any subdirectory of ${PROJECT_DIR}.${NC}"
+        rm -f "${PROJECT_DIR}/Makefile"
+        exit 84
+    fi
+    RELATIVE_PATH="${FILE_PATH#"$PROJECT_DIR/"}"
+    path_to_source[$source]=$RELATIVE_PATH
+    objects+=("${source%.c}.o")
+    raw_headers=(${source_files[$source]})
+    headers=()
+    makefile_headers=()
+    for header in "${raw_headers[@]}"; do
+        if [[ "${SYSTEM_HEADERS[@]}" =~ "${header}" ]]; then
+            headers+=("$header")
+        else
+            headers+=("$HEADERS_DIR/$header")
+            makefile_headers+=("$HEADERS_DIR/$header")
+        fi
+    done
+    headers_str="${headers[*]}"
+    makefile_headers_str="${makefile_headers[*]}"
+    if [[ $makefile_headers_str == /* ]]; then
+        makefile_headers_str="${makefile_headers_str:1}"
+    fi
+    echo -e "$object_file: $RELATIVE_PATH $makefile_headers_str" >> "${PROJECT_DIR}/Makefile"
+    echo -e "\t\$(CC) -c $RELATIVE_PATH -o $object_file \$(CFLAGS) -I /usr/include\n" >> "${PROJECT_DIR}/Makefile"
+    IFS=' ' read -ra header_files <<< "$headers_str"
+    for header in "${header_files[@]}"; do
+        if [[ "${SYSTEM_HEADERS[@]}" =~ "${header}" ]]; then
+            continue
+        fi
+        if [[ $header == /* ]]; then
+            FILE_PATH=$(find "$PROJECT_DIR" -type f -name "${header##*/}")
+            if [ -z "$FILE_PATH" ]; then
+                echo -e "${RED}The file ${header##*/} doesn't exist.${NC}"
+                rm -f "${PROJECT_DIR}/Makefile"
+                exit 84
+            fi
+        else
+            if [ ! -f "$PROJECT_DIR/$header" ]; then
+                echo -e "${RED}The file ${PROJECT_DIR}/${header} doesn't exist.${NC}"
+                rm -f "${PROJECT_DIR}/Makefile"
+                exit 84
+            fi
+        fi
+    done
+done
+
+echo -e "\$(EXEC): ${objects[@]}" >> "${PROJECT_DIR}/Makefile"
+echo -e "\t\$(CC) $^ -o \$(EXEC) \$(LDFLAGS)\n" >> "${PROJECT_DIR}/Makefile"
+echo -e "clean:" >> "${PROJECT_DIR}/Makefile"
+echo -e "\trm -f *.o" >> "${PROJECT_DIR}/Makefile"
+echo -e "\trm -f *.gcno *.gcda *.gcov" >> "${PROJECT_DIR}/Makefile"
+echo -e "\trm -f *.a\n" >> "${PROJECT_DIR}/Makefile"
+echo -e "fclean: clean" >> "${PROJECT_DIR}/Makefile"
+echo -e "\trm -f \$(EXEC)\n" >> "${PROJECT_DIR}/Makefile"
+echo -e "re: fclean all\n" >> "${PROJECT_DIR}/Makefile"
+echo -e "archive:" >> "${PROJECT_DIR}/Makefile"
+echo -e "\t\$(eval VERSION := \$(shell expr \$(VERSION) + 1))" >> "${PROJECT_DIR}/Makefile"
+echo -e "\techo \$(VERSION) > version.txt" >> "${PROJECT_DIR}/Makefile"
+echo -e "\t${ZIP} ${ZIPFLAGS} ${BCK_DIR}/${PROJECT_DIR}-\$(shell expr \$(VERSION) - 1).tar ${path_to_source[@]} > /dev/null" >> "${PROJECT_DIR}/Makefile"
+echo -e "\techo \"${PROJECT_DIR}-\$(shell expr \$(VERSION) - 1).tar file generated.\"\n" >> "${PROJECT_DIR}/Makefile"
+echo -e "revert:" >> "${PROJECT_DIR}/Makefile"
+echo -e "\t\$(eval VERSION := \$(shell expr \$(VERSION) - 1))" >> "${PROJECT_DIR}/Makefile"
+echo -e "\techo \$(VERSION) > version.txt" >> "${PROJECT_DIR}/Makefile"
+echo -e "\trm -rf ${objects[@]/%.o/.c}" >> "${PROJECT_DIR}/Makefile"
+echo -e "\t${UNZIP} ${UNZIPFLAGS} ${BCK_DIR}/${PROJECT_DIR}-\$(VERSION).tar ${path_to_source[@]}\n" >> "${PROJECT_DIR}/Makefile"
+echo -e "num:" >> "${PROJECT_DIR}/Makefile"
+echo -e "\techo \$(VERSION)\n" >> "${PROJECT_DIR}/Makefile"
+echo -e "delete:" >> "${PROJECT_DIR}/Makefile"
+echo -e "\trm -f ${BCK_DIR}/${PROJECT_DIR}-\$(shell expr \$(VERSION) - 1).tar" >> "${PROJECT_DIR}/Makefile"
+echo -e "\t\$(eval VERSION := \$(shell expr \$(VERSION) - 1))" >> "${PROJECT_DIR}/Makefile"
+echo -e "\techo \$(VERSION) > version.txt\n" >> "${PROJECT_DIR}/Makefile"
+echo -e ".PHONY: clean fclean archive revert num delete" >> "${PROJECT_DIR}/Makefile"
+
+echo -e "${GREEN}Makefile generated in ${PROJECT_DIR}.${NC}"

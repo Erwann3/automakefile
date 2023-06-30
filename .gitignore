@@ -1,0 +1,4 @@
+fakeProj1/Makefile
+*.gcno
+*.o
+./test
